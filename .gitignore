@@ -1,0 +1,5 @@
+*.xlsx
+*.xls
+*.csv
+.DS_Store
+__pycache__/
