@@ -1,38 +1,53 @@
 import streamlit as st
 import pandas as pd
 import unicodedata
+import re
 from io import BytesIO
 from rapidfuzz import fuzz
 
-st.set_page_config(page_title="Conciliación Cartola Ombligo", layout="centered")
+st.set_page_config(page_title="Conciliación Integral Ombligo", layout="centered")
 
-# Funciones extraídas de tus módulos originales
 def limpiar_texto_bancario(texto):
     if not isinstance(texto, str): return ""
     texto = unicodedata.normalize('NFKD', texto).encode('ASCII', 'ignore').decode('utf-8')
     texto = texto.upper().replace("TRASPASO DE:", "").replace("TRASPASO DE :", "")
     return " ".join(texto.split())
 
+def limpiar_rut(rut):
+    if pd.isna(rut): return ""
+    rut = str(rut).upper()
+    return re.sub(r'[^0-9K]', '', rut)
+
 def calcular_similitud(nombre_inscrito, nombre_banco):
     n_inscrito = str(nombre_inscrito)
     n_banco = str(nombre_banco)
     return max(fuzz.token_set_ratio(n_inscrito, n_banco), fuzz.partial_ratio(n_inscrito, n_banco))
 
-st.title("Conciliación por Cartola (Motor Inteligente)")
-st.markdown("Busca transferencias usando similitud de nombres y montos exactos.")
+st.title("Conciliación Integral (Cartola + Formularios)")
+st.markdown("Valida quién envió el formulario y cruza con el banco para ver si la plata realmente llegó.")
 
-# Tu configuración interactiva de montos
 montos_input = st.text_input("Montos válidos para el mes, separados por coma (Ej: 17500, 19500)", "17500, 19500")
 
-file_cartola = st.file_uploader("1. Sube la Cartola Bancaria (Excel)", type=['xlsx', 'xls', 'csv'])
+# 3 Bloques de subida de archivos
+file_cartola = st.file_uploader("1. Sube la Cartola Bancaria (Excel/CSV)", type=['xlsx', 'xls', 'csv'])
 file_inscripciones = st.file_uploader("2. Sube la Base de Inscripciones (Excel)", type=['xlsx'])
+files_formularios = st.file_uploader("3. Sube los Formularios de Pago (Puedes arrastrar el Interno y Externo juntos)", type=['xlsx'], accept_multiple_files=True)
 
-if st.button("Conciliar Pagos") and file_cartola and file_inscripciones:
-    with st.spinner("Analizando transferencias con IA..."):
+if st.button("Conciliar Todo") and file_cartola and file_inscripciones and files_formularios:
+    with st.spinner("Cruzando Base, Formularios y Cartola del Banco..."):
         try:
             montos_aceptados = [int(m.strip()) for m in montos_input.split(',')]
             
-            # --- LEER CARTOLA (Buscando dónde empiezan los datos) ---
+            # --- 1. LEER Y UNIR TODOS LOS FORMULARIOS ---
+            ruts_formulario = set()
+            for file_form in files_formularios:
+                df_f = pd.read_excel(file_form)
+                # Buscar columna de RUT
+                col_rut_f = [c for c in df_f.columns if 'rut' in str(c).lower()][0]
+                ruts_formulario.update(df_f[col_rut_f].apply(limpiar_rut).tolist())
+            ruts_formulario.discard("")
+            
+            # --- 2. LEER CARTOLA ---
             df_raw = pd.read_excel(file_cartola, header=None)
             fila_header = 0
             for i, row in df_raw.iterrows():
@@ -46,22 +61,25 @@ if st.button("Conciliar Pagos") and file_cartola and file_inscripciones:
             col_desc = [c for c in df_cartola.columns if 'descrip' in str(c).lower()][0]
             col_fecha = [c for c in df_cartola.columns if 'fecha' in str(c).lower()][0]
             
-            # Filtrar solo ingresos
             df_cartola = df_cartola.dropna(subset=[col_abonos])
             df_cartola = df_cartola[df_cartola[col_abonos] > 0].copy()
             df_cartola['Nombre_Limpio'] = df_cartola[col_desc].apply(limpiar_texto_bancario)
             df_cartola = df_cartola.rename(columns={col_fecha: 'Fecha', col_abonos: 'Monto', col_desc: 'Descripcion'})
             
-            # --- LEER INSCRIPCIONES ---
+            # --- 3. LEER INSCRIPCIONES (LA BASE OFICIAL) ---
             df_ins = pd.read_excel(file_inscripciones)
             cols_nombre_completo = [c for c in df_ins.columns if 'nombre completo' in str(c).lower()]
             col_nombre = cols_nombre_completo[0] if cols_nombre_completo else [c for c in df_ins.columns if 'nombre' in str(c).lower()][0]
-            df_ins['Nombre_Limpio'] = df_ins[col_nombre].apply(limpiar_texto_bancario)
+            col_rut_ins = [c for c in df_ins.columns if 'rut' in str(c).lower()][0]
             
-            # --- MOTOR DE CONCILIACIÓN ---
-            df_ins['Estado_Pago'] = 'No pagado'
-            df_ins['Similitud_%'] = 0.0
-            df_ins['Fecha_Pago'] = None
+            df_ins['Nombre_Limpio'] = df_ins[col_nombre].apply(limpiar_texto_bancario)
+            df_ins['RUT_Limpio'] = df_ins[col_rut_ins].apply(limpiar_rut)
+            
+            # --- 4. MOTOR DE CONCILIACIÓN A TRES BANDAS ---
+            df_ins['Estado_Final'] = 'No pagado'
+            df_ins['Lleno_Formulario'] = df_ins['RUT_Limpio'].isin(ruts_formulario)
+            df_ins['Similitud_IA_%'] = 0.0
+            df_ins['Fecha_Banco'] = None
             
             transferencias_usadas = set()
             
@@ -69,6 +87,7 @@ if st.button("Conciliar Pagos") and file_cartola and file_inscripciones:
                 nombre_inscrito = row['Nombre_Limpio']
                 candidatos = []
                 
+                # Buscar en el banco
                 for i, trans in df_cartola.iterrows():
                     if i not in transferencias_usadas and trans['Monto'] in montos_aceptados:
                         similitud = calcular_similitud(nombre_inscrito, trans['Nombre_Limpio'])
@@ -76,37 +95,52 @@ if st.button("Conciliar Pagos") and file_cartola and file_inscripciones:
                             'index': i, 'similitud': similitud, 'monto': trans['Monto'], 'fecha': trans['Fecha']
                         })
                 
+                # Evaluar evidencia
+                encontrado_en_banco = False
                 if candidatos:
-                    # Ordenar por el mejor match
                     candidatos.sort(key=lambda x: x['similitud'], reverse=True)
                     mejor = candidatos[0]
-                    
-                    if mejor['similitud'] >= 85: # Umbral de confianza
-                        df_ins.at[idx, 'Estado_Pago'] = 'Pagado verificado'
-                        df_ins.at[idx, 'Similitud_%'] = round(mejor['similitud'])
-                        df_ins.at[idx, 'Fecha_Pago'] = mejor['fecha']
+                    if mejor['similitud'] >= 85: # Umbral IA
+                        encontrado_en_banco = True
+                        df_ins.at[idx, 'Similitud_IA_%'] = round(mejor['similitud'])
+                        df_ins.at[idx, 'Fecha_Banco'] = mejor['fecha']
                         transferencias_usadas.add(mejor['index'])
-            
-            # --- SEPARAR RESULTADOS ---
-            pagados = df_ins[df_ins['Estado_Pago'] == 'Pagado verificado']
-            pendientes = df_ins[df_ins['Estado_Pago'] == 'No pagado']
+                
+                # Cruzar Banco vs Formulario
+                if encontrado_en_banco and row['Lleno_Formulario']:
+                    df_ins.at[idx, 'Estado_Final'] = '1. Verificado (Form + Banco)'
+                elif encontrado_en_banco and not row['Lleno_Formulario']:
+                    df_ins.at[idx, 'Estado_Final'] = '2. Despistado (Pago sin Formulario)'
+                elif not encontrado_en_banco and row['Lleno_Formulario']:
+                    df_ins.at[idx, 'Estado_Final'] = '3. ALERTA: Con Formulario pero SIN PAGO en banco'
+                else:
+                    df_ins.at[idx, 'Estado_Final'] = '4. No pagado'
+
+            # --- 5. PREPARAR DESCARGAS ---
+            verificados = df_ins[df_ins['Estado_Final'] == '1. Verificado (Form + Banco)']
+            despistados = df_ins[df_ins['Estado_Final'] == '2. Despistado (Pago sin Formulario)']
+            alertas = df_ins[df_ins['Estado_Final'] == '3. ALERTA: Con Formulario pero SIN PAGO en banco']
+            no_pagados = df_ins[df_ins['Estado_Final'] == '4. No pagado']
             sobrantes = df_cartola.drop(index=list(transferencias_usadas))
             
-            st.success(f"✅ ¡Se verificaron {len(pagados)} pagos automáticamente!")
-            st.warning(f"⚠️ Faltan {len(pendientes)} personas por pagar.")
-            st.info(f"❓ Quedan {len(sobrantes)} transferencias en la cartola que no calzan con nadie (Terceros pagadores o depósitos externos).")
+            st.success(f"✅ {len(verificados)} Pagos Verificados (Tienen formulario y depósito).")
+            st.info(f"💡 {len(despistados)} Despistados (Depositaron pero no enviaron formulario).")
+            st.error(f"🚨 {len(alertas)} ALERTAS (Llenaron el formulario pero la plata no está en el banco).")
+            st.warning(f"⚠️ {len(no_pagados)} Pendientes (No han hecho nada).")
             
-            # --- DESCARGA DE REPORTE ---
             output = BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                pagados.to_excel(writer, index=False, sheet_name='Pagados Auto')
-                sobrantes.to_excel(writer, index=False, sheet_name='Revisión Manual (Sobrantes)')
-                pendientes.to_excel(writer, index=False, sheet_name='Pendientes')
+                verificados.to_excel(writer, index=False, sheet_name='Verificados')
+                alertas.to_excel(writer, index=False, sheet_name='🚨 ALERTAS (Sin Pago)')
+                despistados.to_excel(writer, index=False, sheet_name='Despistados (Falta Form)')
+                no_pagados.to_excel(writer, index=False, sheet_name='No Pagados')
+                sobrantes.to_excel(writer, index=False, sheet_name='Sobrantes Banco')
             
             st.download_button(
-                label="Descargar Reporte Completo de Conciliación", 
+                label="Descargar Reporte Integral", 
                 data=output.getvalue(), 
-                file_name="Conciliacion_Cartola_Final.xlsx"
+                file_name="Reporte_Conciliacion_Integral.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
             
         except Exception as e:
