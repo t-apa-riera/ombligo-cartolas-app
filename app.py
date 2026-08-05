@@ -154,13 +154,13 @@ if st.button("Conciliar Todo") and file_cartola and file_inscripciones and files
 
             # --- 5. FILTRAR COLUMNAS PARA EL EXCEL FINAL ---
             
-            # Buscar dinámicamente columnas de ID y Carrera por si vienen con mayúsculas/minúsculas
             col_id_lista = [c for c in df_ins.columns if str(c).strip().lower() == 'id']
             col_carrera_lista = [c for c in df_ins.columns if str(c).strip().lower() == 'carrera']
             
+            # Aquí está el cambio: Exportamos 'RUT_Limpio' en lugar de la columna original
             renombres = {
                 col_nombre: 'Nombre completo',
-                col_rut_ins: 'RUT'
+                'RUT_Limpio': 'RUT'
             }
             if col_id_lista:
                 renombres[col_id_lista[0]] = 'ID'
@@ -169,13 +169,11 @@ if st.button("Conciliar Todo") and file_cartola and file_inscripciones and files
                 
             df_ins = df_ins.rename(columns=renombres)
             
-            # Formato estricto de las columnas que solicitaste
             columnas_deseadas = [
                 'ID', 'Nombre completo', 'RUT', 'Carrera', 'Estado pago', 
                 'Motivo', 'Similitud Nombre%', 'Monto encontrado', 'Fecha encontrada'
             ]
             
-            # Aseguramos que existan, creando vacías si faltan en tu base original
             for col in columnas_deseadas:
                 if col not in df_ins.columns:
                     df_ins[col] = None
