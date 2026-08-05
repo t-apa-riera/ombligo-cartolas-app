@@ -76,10 +76,11 @@ if st.button("Conciliar Todo") and file_cartola and file_inscripciones and files
             df_ins['RUT_Limpio'] = df_ins[col_rut_ins].apply(limpiar_rut)
             
             # --- 4. MOTOR DE CONCILIACIÓN A TRES BANDAS ---
-            df_ins['Estado_Final'] = 'No pagado'
+            df_ins['Estado pago'] = '4. No pagado'
             df_ins['Lleno_Formulario'] = df_ins['RUT_Limpio'].isin(ruts_formulario)
-            df_ins['Similitud_IA_%'] = 0.0
-            df_ins['Fecha_Banco'] = None
+            df_ins['Similitud Nombre%'] = 0.0
+            df_ins['Fecha encontrada'] = None
+            df_ins['Monto encontrado'] = None
             
             transferencias_usadas = set()
             
@@ -102,25 +103,45 @@ if st.button("Conciliar Todo") and file_cartola and file_inscripciones and files
                     mejor = candidatos[0]
                     if mejor['similitud'] >= 85: # Umbral IA
                         encontrado_en_banco = True
-                        df_ins.at[idx, 'Similitud_IA_%'] = round(mejor['similitud'])
-                        df_ins.at[idx, 'Fecha_Banco'] = mejor['fecha']
+                        df_ins.at[idx, 'Similitud Nombre%'] = round(mejor['similitud'])
+                        df_ins.at[idx, 'Fecha encontrada'] = mejor['fecha']
+                        df_ins.at[idx, 'Monto encontrado'] = mejor['monto'] # Rescatando el monto encontrado
                         transferencias_usadas.add(mejor['index'])
                 
                 # Cruzar Banco vs Formulario
                 if encontrado_en_banco and row['Lleno_Formulario']:
-                    df_ins.at[idx, 'Estado_Final'] = '1. Verificado (Form + Banco)'
+                    df_ins.at[idx, 'Estado pago'] = '1. Verificado (Form + Banco)'
                 elif encontrado_en_banco and not row['Lleno_Formulario']:
-                    df_ins.at[idx, 'Estado_Final'] = '2. Despistado (Pago sin Formulario)'
+                    df_ins.at[idx, 'Estado pago'] = '2. Despistado (Pago sin Formulario)'
                 elif not encontrado_en_banco and row['Lleno_Formulario']:
-                    df_ins.at[idx, 'Estado_Final'] = '3. ALERTA: Con Formulario pero SIN PAGO en banco'
+                    df_ins.at[idx, 'Estado pago'] = '3. ALERTA: Con Formulario pero SIN PAGO en banco'
                 else:
-                    df_ins.at[idx, 'Estado_Final'] = '4. No pagado'
+                    df_ins.at[idx, 'Estado pago'] = '4. No pagado'
 
-            # --- 5. PREPARAR DESCARGAS ---
-            verificados = df_ins[df_ins['Estado_Final'] == '1. Verificado (Form + Banco)']
-            despistados = df_ins[df_ins['Estado_Final'] == '2. Despistado (Pago sin Formulario)']
-            alertas = df_ins[df_ins['Estado_Final'] == '3. ALERTA: Con Formulario pero SIN PAGO en banco']
-            no_pagados = df_ins[df_ins['Estado_Final'] == '4. No pagado']
+            # --- 5. FILTRAR COLUMNAS PARA EL EXCEL FINAL ---
+            # Renombramos las columnas originales a tu formato deseado
+            df_ins = df_ins.rename(columns={
+                col_nombre: 'Nombre completo',
+                col_rut_ins: 'RUT'
+            })
+            
+            columnas_deseadas = [
+                'ID', 'Nombre completo', 'RUT', 'Carrera', 'Estado pago', 
+                'Motivo', 'Similitud Nombre%', 'Monto encontrado', 'Fecha encontrada'
+            ]
+            
+            # Aseguramos que todas las columnas existan, creando en blanco las que no (Ej. Motivo)
+            for col in columnas_deseadas:
+                if col not in df_ins.columns:
+                    df_ins[col] = None
+                    
+            df_final = df_ins[columnas_deseadas]
+
+            # --- 6. PREPARAR DESCARGAS ---
+            verificados = df_final[df_final['Estado pago'] == '1. Verificado (Form + Banco)']
+            despistados = df_final[df_final['Estado pago'] == '2. Despistado (Pago sin Formulario)']
+            alertas = df_final[df_final['Estado pago'] == '3. ALERTA: Con Formulario pero SIN PAGO en banco']
+            no_pagados = df_final[df_final['Estado pago'] == '4. No pagado']
             sobrantes = df_cartola.drop(index=list(transferencias_usadas))
             
             st.success(f"✅ {len(verificados)} Pagos Verificados (Tienen formulario y depósito).")
