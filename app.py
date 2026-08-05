@@ -35,7 +35,7 @@ if st.button("Conciliar Todo") and file_cartola and file_inscripciones and files
     with st.spinner("Extrayendo montos y cruzando datos..."):
         try:
             # --- 1. LEER FORMULARIOS Y EXTRAER MONTOS AUTOMÁTICAMENTE ---
-            ruts_formulario = {} # Diccionario: RUT -> Monto esperado
+            ruts_formulario = {} 
             montos_aceptados = set()
             
             for file_form in files_formularios:
@@ -58,11 +58,10 @@ if st.button("Conciliar Todo") and file_cartola and file_inscripciones and files
                     
                     monto_esperado = 0
                     if col_pago:
-                        # Extraer solo los números (ej: "Transferencia - $17.500" -> 17500)
                         val_str = str(row_f[col_pago]).replace('.', '').replace('$', '')
                         numeros = re.findall(r'\d+', val_str)
                         for n in numeros:
-                            if int(n) >= 1000: # Asumimos que los cobros son mayores a $1000
+                            if int(n) >= 1000: 
                                 monto_esperado = int(n)
                                 montos_aceptados.add(monto_esperado)
                                 break
@@ -132,7 +131,7 @@ if st.button("Conciliar Todo") and file_cartola and file_inscripciones and files
                 if candidatos:
                     candidatos.sort(key=lambda x: x['similitud'], reverse=True)
                     mejor = candidatos[0]
-                    if mejor['similitud'] >= 85: # Umbral IA
+                    if mejor['similitud'] >= 85: 
                         encontrado_en_banco = True
                         df_ins.at[idx, 'Similitud Nombre%'] = round(mejor['similitud'])
                         df_ins.at[idx, 'Fecha encontrada'] = mejor['fecha']
@@ -154,10 +153,21 @@ if st.button("Conciliar Todo") and file_cartola and file_inscripciones and files
                     df_ins.at[idx, 'Estado pago'] = '4. No pagado'
 
             # --- 5. FILTRAR COLUMNAS PARA EL EXCEL FINAL ---
-            df_ins = df_ins.rename(columns={
+            
+            # Buscar dinámicamente columnas de ID y Carrera por si vienen con mayúsculas/minúsculas
+            col_id_lista = [c for c in df_ins.columns if str(c).strip().lower() == 'id']
+            col_carrera_lista = [c for c in df_ins.columns if str(c).strip().lower() == 'carrera']
+            
+            renombres = {
                 col_nombre: 'Nombre completo',
                 col_rut_ins: 'RUT'
-            })
+            }
+            if col_id_lista:
+                renombres[col_id_lista[0]] = 'ID'
+            if col_carrera_lista:
+                renombres[col_carrera_lista[0]] = 'Carrera'
+                
+            df_ins = df_ins.rename(columns=renombres)
             
             # Formato estricto de las columnas que solicitaste
             columnas_deseadas = [
