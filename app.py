@@ -24,7 +24,7 @@ def calcular_similitud(nombre_inscrito, nombre_banco):
     return max(fuzz.token_set_ratio(n_inscrito, n_banco), fuzz.partial_ratio(n_inscrito, n_banco))
 
 st.title("Conciliación Integral (Cartola + Formularios)")
-st.markdown("Valida quién envió el formulario y cruza con el banco. **Los montos se extraen automáticamente de los formularios.**")
+st.markdown("Valida quién envió el formulario y cruza con el banco. **Los montos se extraen automáticamente.**")
 
 # 3 Bloques de subida de archivos
 file_cartola = st.file_uploader("1. Sube la Cartola Bancaria (Excel/CSV)", type=['xlsx', 'xls', 'csv'])
@@ -90,6 +90,17 @@ if st.button("Conciliar Todo") and file_cartola and file_inscripciones and files
             df_cartola = df_cartola.dropna(subset=[col_abonos])
             df_cartola = df_cartola[df_cartola[col_abonos] > 0].copy()
             df_cartola['Nombre_Limpio'] = df_cartola[col_desc].apply(limpiar_texto_bancario)
+            
+            # Formatear la fecha para que salga bonita (ej: 19/06)
+            def formatear_fecha(f):
+                try:
+                    if isinstance(f, pd.Timestamp):
+                        return f.strftime('%d/%m')
+                    return str(f).split(' ')[0] 
+                except:
+                    return str(f)
+                    
+            df_cartola[col_fecha] = df_cartola[col_fecha].apply(formatear_fecha)
             df_cartola = df_cartola.rename(columns={col_fecha: 'Fecha', col_abonos: 'Monto', col_desc: 'Descripcion'})
             
             # --- 3. LEER INSCRIPCIONES (LA BASE OFICIAL) ---
@@ -102,10 +113,11 @@ if st.button("Conciliar Todo") and file_cartola and file_inscripciones and files
             df_ins['RUT_Limpio'] = df_ins[col_rut_ins].apply(limpiar_rut)
             
             # --- 4. MOTOR DE CONCILIACIÓN A TRES BANDAS ---
-            df_ins['Estado pago'] = '4. No pagado'
-            df_ins['Similitud Nombre%'] = 0.0
-            df_ins['Fecha encontrada'] = None
-            df_ins['Monto encontrado'] = None
+            df_ins['Estado Pago'] = 'No pagado'
+            df_ins['Motivo'] = ''
+            df_ins['Similitud Nombre %'] = 0.0
+            df_ins['Fecha Encontrada'] = None
+            df_ins['Monto Encontrado'] = None
             
             transferencias_usadas = set()
             
@@ -118,7 +130,6 @@ if st.button("Conciliar Todo") and file_cartola and file_inscripciones and files
                 
                 candidatos = []
                 
-                # Buscar en el banco filtrando por los montos que detectamos
                 for i, trans in df_cartola.iterrows():
                     if i not in transferencias_usadas and trans['Monto'] in montos_aceptados:
                         similitud = calcular_similitud(nombre_inscrito, trans['Nombre_Limpio'])
@@ -126,38 +137,42 @@ if st.button("Conciliar Todo") and file_cartola and file_inscripciones and files
                             'index': i, 'similitud': similitud, 'monto': trans['Monto'], 'fecha': trans['Fecha']
                         })
                 
-                # Evaluar evidencia
                 encontrado_en_banco = False
                 if candidatos:
                     candidatos.sort(key=lambda x: x['similitud'], reverse=True)
                     mejor = candidatos[0]
                     if mejor['similitud'] >= 85: 
                         encontrado_en_banco = True
-                        df_ins.at[idx, 'Similitud Nombre%'] = round(mejor['similitud'])
-                        df_ins.at[idx, 'Fecha encontrada'] = mejor['fecha']
-                        df_ins.at[idx, 'Monto encontrado'] = mejor['monto']
+                        df_ins.at[idx, 'Similitud Nombre %'] = round(mejor['similitud'])
+                        df_ins.at[idx, 'Fecha Encontrada'] = mejor['fecha']
+                        df_ins.at[idx, 'Monto Encontrado'] = mejor['monto']
                         transferencias_usadas.add(mejor['index'])
                 
-                # Cruzar Banco vs Formulario con validación estricta de monto
+                # ACA CONSTRUIMOS EL TEXTO DEL MOTIVO
                 if encontrado_en_banco:
+                    sim_str = round(mejor['similitud'])
+                    f_str = mejor['fecha']
                     if lleno_form:
                         if monto_form > 0 and mejor['monto'] != monto_form:
-                            df_ins.at[idx, 'Estado pago'] = f'3. ALERTA: Pagó ${int(mejor["monto"])} pero form dice ${monto_form}'
+                            df_ins.at[idx, 'Estado Pago'] = 'Alerta'
+                            df_ins.at[idx, 'Motivo'] = f"No calzan los montos: pagó ${int(mejor['monto'])} pero el form dice ${monto_form}."
                         else:
-                            df_ins.at[idx, 'Estado pago'] = '1. Verificado (Form + Banco)'
+                            df_ins.at[idx, 'Estado Pago'] = 'Pagado verificado'
+                            df_ins.at[idx, 'Motivo'] = f"Aprobado automáticamente. Coincidencia: {sim_str}% | Fecha Banco: {f_str}"
                     else:
-                        df_ins.at[idx, 'Estado pago'] = '2. Despistado (Pago sin Formulario)'
+                        df_ins.at[idx, 'Estado Pago'] = 'Despistado'
+                        df_ins.at[idx, 'Motivo'] = "Pago encontrado en el banco pero no hay registro en el formulario."
                 elif lleno_form:
-                    df_ins.at[idx, 'Estado pago'] = '3. ALERTA: Con Formulario pero SIN PAGO en banco'
+                    df_ins.at[idx, 'Estado Pago'] = 'Alerta'
+                    df_ins.at[idx, 'Motivo'] = "Llenó formulario pero no se encontró el pago en el banco."
                 else:
-                    df_ins.at[idx, 'Estado pago'] = '4. No pagado'
+                    df_ins.at[idx, 'Estado Pago'] = 'No pagado'
+                    df_ins.at[idx, 'Motivo'] = "Sin registro de pago ni formulario."
 
             # --- 5. FILTRAR COLUMNAS PARA EL EXCEL FINAL ---
-            
             col_id_lista = [c for c in df_ins.columns if str(c).strip().lower() == 'id']
             col_carrera_lista = [c for c in df_ins.columns if str(c).strip().lower() == 'carrera']
             
-            # Aquí está el cambio: Exportamos 'RUT_Limpio' en lugar de la columna original
             renombres = {
                 col_nombre: 'Nombre completo',
                 'RUT_Limpio': 'RUT'
@@ -169,9 +184,10 @@ if st.button("Conciliar Todo") and file_cartola and file_inscripciones and files
                 
             df_ins = df_ins.rename(columns=renombres)
             
+            # LA ESTRUCTURA EXACTA QUE PEDISTE
             columnas_deseadas = [
-                'ID', 'Nombre completo', 'RUT', 'Carrera', 'Estado pago', 
-                'Motivo', 'Similitud Nombre%', 'Monto encontrado', 'Fecha encontrada'
+                'ID', 'Nombre completo', 'RUT', 'Carrera', 'Estado Pago', 
+                'Motivo', 'Similitud Nombre %', 'Monto Encontrado', 'Fecha Encontrada'
             ]
             
             for col in columnas_deseadas:
@@ -181,10 +197,10 @@ if st.button("Conciliar Todo") and file_cartola and file_inscripciones and files
             df_final = df_ins[columnas_deseadas]
 
             # --- 6. PREPARAR DESCARGAS ---
-            verificados = df_final[df_final['Estado pago'] == '1. Verificado (Form + Banco)']
-            despistados = df_final[df_final['Estado pago'] == '2. Despistado (Pago sin Formulario)']
-            alertas = df_final[df_final['Estado pago'].str.contains('3. ALERTA', na=False)]
-            no_pagados = df_final[df_final['Estado pago'] == '4. No pagado']
+            verificados = df_final[df_final['Estado Pago'] == 'Pagado verificado']
+            despistados = df_final[df_final['Estado Pago'] == 'Despistado']
+            alertas = df_final[df_final['Estado Pago'] == 'Alerta']
+            no_pagados = df_final[df_final['Estado Pago'] == 'No pagado']
             sobrantes = df_cartola.drop(index=list(transferencias_usadas))
             
             st.success(f"✅ {len(verificados)} Pagos Verificados sin problemas.")
